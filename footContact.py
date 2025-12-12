@@ -1,92 +1,62 @@
 import cv2
 import mediapipe as mp
-import numpy as np
+import csv
 
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(
-    model_complexity=1,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+pose = mp_pose.Pose()
 
-def classify_contact(heel_y, toe_y, threshold=5):
-    diff = heel_y - toe_y
+# Create CSV file and write header
+csv_filename = "pose_coordinates.csv"
+with open(csv_filename, "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow([
+        "frame",
+        "left_foot_x", "left_foot_y",
+        "right_foot_x", "right_foot_y",
+        "left_hip_x", "left_hip_y",
+        "right_hip_x", "right_hip_y"
+    ])
 
-    if diff > threshold:
-        return 0    # Heel contact
-    elif diff < -threshold:
-        return 2    # Toe contact
-    else:
-        return 1    # Flatfoot contact
+# Open video (or use cv2.VideoCapture(0) for webcam)
+cap = cv2.VideoCapture("your_video.mp4")
 
-cap = cv2.VideoCapture(0)
-
-prev_heel_y = None
-prev_toe_y = None
-SPEED_THRESH = 3  # px change allowed to consider "static" on ground
+frame_num = 0
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
 
-    h, w, _ = frame.shape
+    frame_num += 1
+
+    # Convert to RGB for MediaPipe
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = pose.process(rgb)
 
-    display_text = "No contact"
-    color = (255, 255, 255)
+    # Skip frames with no detection
+    if not results.pose_landmarks:
+        continue
 
-    if results.pose_landmarks:
-        lm = results.pose_landmarks.landmark
+    lm = results.pose_landmarks.landmark
 
-        heel = lm[mp_pose.PoseLandmark.RIGHT_HEEL]
-        toe = lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX]
+    # Extract coordinates (normalized 0–1 → multiply by frame size if needed)
+    left_foot = lm[mp_pose.PoseLandmark.LEFT_ANKLE]
+    right_foot = lm[mp_pose.PoseLandmark.RIGHT_ANKLE]
+    left_hip = lm[mp_pose.PoseLandmark.LEFT_HIP]
+    right_hip = lm[mp_pose.PoseLandmark.RIGHT_HIP]
 
-        heel_y = heel.y * h
-        toe_y = toe.y * h
-
-        # Initialize previous values first frame
-        if prev_heel_y is None:
-            prev_heel_y = heel_y
-            prev_toe_y = toe_y
-
-        # Compute vertical speeds
-        heel_speed = abs(heel_y - prev_heel_y)
-        toe_speed = abs(toe_y - prev_toe_y)
-
-        # Update previous positions
-        prev_heel_y = heel_y
-        prev_toe_y = toe_y
-
-        # Only classify if the foot is stable (touching ground)
-        if heel_speed < SPEED_THRESH and toe_speed < SPEED_THRESH:
-            contact = classify_contact(heel_y, toe_y)
-
-            if contact == 0:
-                display_text = "Heel Contact"
-                color = (255, 0, 0)
-            elif contact == 1:
-                display_text = "Flatfoot Contact"
-                color = (0, 255, 0)
-            else:
-                display_text = "Toe Contact"
-                color = (0, 0, 255)
-        else:
-            display_text = "Foot in air (Swing phase)"
-            color = (200, 200, 200)
-
-        # Draw markers
-        cv2.circle(frame, (int(heel.x * w), int(heel.y * h)), 6, (0, 255, 255), -1)
-        cv2.circle(frame, (int(toe.x * w), int(toe.y * h)), 6, (255, 255, 0), -1)
-
-    # Display state
-    cv2.putText(frame, display_text, (30, 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-
-    cv2.imshow("Foot Contact Detection", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+    # Save to CSV
+    with open(csv_filename, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            frame_num,
+            left_foot.x, left_foot.y,
+            right_foot.x, right_foot.y,
+            left_hip.x, left_hip.y,
+            right_hip.x, right_hip.y
+        ])
 
 cap.release()
-cv2.destroyAllWindows()
+pose.close()
+
+print("Saved coordinates to", csv_filename)
