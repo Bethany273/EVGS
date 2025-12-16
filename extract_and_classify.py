@@ -33,8 +33,8 @@ peaks, props = find_peaks(dist_smooth, distance=5, prominence=0.01)
 contacts = []
 
 TOL = 1e-3
-FLAT_ABS = 0.005
-FLAT_FRAC = 0.03
+FLAT_ABS = 0.01
+FLAT_FRAC = 0.05
 for p in peaks:
     frame = int(frames[p])
     # find row

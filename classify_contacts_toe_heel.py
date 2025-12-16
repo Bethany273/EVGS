@@ -8,8 +8,8 @@ pose = pd.read_csv(pose_file)
 report = pd.read_csv(report_file)
 
 results = []
-FLAT_ABS = 0.005
-FLAT_FRAC = 0.03
+FLAT_ABS = 0.01
+FLAT_FRAC = 0.05
 for _, r in report.iterrows():
     frame = int(r['frame'])
     front = r['front']

@@ -34,6 +34,9 @@ cap = cv2.VideoCapture(0)   # 0 = default webcam
 
 frame_num = 0
 
+video_writer = None
+video_filename = csv_filename.replace('.csv', '.mp4')
+
 print("Starting live capture. Press 'q' to stop.")
 
 while cap.isOpened():
@@ -44,6 +47,15 @@ while cap.isOpened():
     frame_num += 1
     
     h, w, _ = frame.shape
+        # initialize video writer on first valid frame
+        if video_writer is None:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                # try to get fps from capture, fallback to 30
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                video_writer = cv2.VideoWriter(video_filename, fourcc, fps, (w, h))
+            except Exception:
+                video_writer = None
     
     # Process frame with MediaPipe
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -95,11 +107,21 @@ while cap.isOpened():
     # Optional: show webcam feed
     cv2.imshow("Live Pose Feed", frame)
 
+    # write frame to video if writer initialized
+    if video_writer is not None:
+        try:
+            video_writer.write(frame)
+        except Exception:
+            pass
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
 cap.release()
+if video_writer is not None:
+    video_writer.release()
 pose.close()
 cv2.destroyAllWindows()
 
 print(f"Data saved to {csv_filename}")
+print(f"Video saved to {video_filename}")

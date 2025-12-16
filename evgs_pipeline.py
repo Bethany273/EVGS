@@ -10,6 +10,7 @@ import matplotlib
 # force non-interactive backend for scripts
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import cv2
 
 TOL = 1e-3
 SMOOTH_WINDOW = 5
@@ -37,7 +38,7 @@ def find_latest_nonempty_pose():
 # angle calculation removed — classification uses vertical toe-vs-heel rule
 
 
-def run_pipeline(pose_path, out_prefix='front_contact'):
+def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_out=None):
     pose = pd.read_csv(pose_path)
     if pose.empty:
         print('Pose CSV empty:', pose_path)
@@ -167,6 +168,61 @@ def run_pipeline(pose_path, out_prefix='front_contact'):
     plt.tight_layout()
     plt.savefig(out_png)
     print('Saved annotated plot to', out_png)
+
+    # optional: save per-frame annotated video showing foot/keypoint positions
+    if save_video:
+        try:
+            h, w = 720, 1280
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_path = video_out or (out_prefix + '_video.mp4')
+            # estimate fps from time_s if present
+            fps = 30.0
+            if 'time_s' in pose.columns:
+                times = pose['time_s'].dropna().to_numpy()
+                if len(times) >= 2:
+                    fps = max(1.0, 1.0 / float(np.mean(np.diff(times))))
+            writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
+
+            contact_frames = {int(r['frame']): r['toe_heel_contact'] for _, r in df.iterrows()}
+
+            for _, prow in pose.iterrows():
+                img = np.full((h, w, 3), 255, dtype=np.uint8)
+                fnum = int(prow['frame'])
+                # draw feet and toes
+                def draw_point(xk, yk, color=(0, 0, 255), r=6):
+                    try:
+                        x = float(prow[xk]); y = float(prow[yk])
+                    except Exception:
+                        return
+                    px = int(np.clip(x * w, 0, w-1))
+                    py = int(np.clip(y * h, 0, h-1))
+                    cv2.circle(img, (px, py), r, color, -1)
+
+                draw_point('left_foot_x', 'left_foot_y', (0,128,255), 8)
+                draw_point('right_foot_x', 'right_foot_y', (0,128,255), 8)
+                draw_point('left_toe_x', 'left_toe_y', (0,0,255), 6)
+                draw_point('right_toe_x', 'right_toe_y', (0,0,255), 6)
+
+                # annotate if this frame is a detected contact
+                if fnum in contact_frames:
+                    typ = contact_frames[fnum]
+                    text = f"{typ} @ frame {fnum}"
+                    cv2.putText(img, text, (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 2)
+                    # mark front foot
+                    rec = df[df['frame'] == fnum]
+                    if not rec.empty:
+                        rec = rec.iloc[0]
+                        if rec['front'] == 'left':
+                            draw_point('left_toe_x', 'left_toe_y', (0,0,200), 12)
+                        else:
+                            draw_point('right_toe_x', 'right_toe_y', (0,0,200), 12)
+
+                writer.write(img)
+
+            writer.release()
+            print('Saved annotated video to', video_path)
+        except Exception as e:
+            print('Failed to write video:', e)
 
     # print summary
     for _, r in df.iterrows():
