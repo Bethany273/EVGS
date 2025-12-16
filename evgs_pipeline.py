@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt
 TOL = 1e-3
 SMOOTH_WINDOW = 5
 # flat thresholds: absolute and fraction of foot length
-FLAT_ABS = 0.00001
-FLAT_FRAC = 0.0001
+FLAT_ABS = 0.01
+FLAT_FRAC = 0.05
 
 
 def find_latest_nonempty_pose():
