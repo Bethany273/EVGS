@@ -11,6 +11,14 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import cv2
+from datetime import datetime
+import mediapipe as mp
+
+# mediapipe drawing
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
+
+VIS_THRESH = 0.45
 
 TOL = 1e-3
 SMOOTH_WINDOW = 5
@@ -229,18 +237,135 @@ def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_
         print(f"Frame {int(r['frame'])} — {r['time_s']}s — {r['front']} — {r['toe_heel_contact']}")
 
 
+def capture_pose(input_src=None, vis_thresh=VIS_THRESH):
+    """Capture frames from camera or video and write a pose CSV and MP4 with landmarks.
+    Returns (csv_filename, video_filename) on success or (None, None) on failure.
+    """
+    src = input_src if input_src is not None else '0'
+    try:
+        cam_idx = int(src)
+        cap = cv2.VideoCapture(cam_idx)
+    except Exception:
+        cap = cv2.VideoCapture(src)
+
+    csv_filename = f"pose_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    video_filename = csv_filename.replace('.csv', '.mp4')
+
+    # write CSV header
+    with open(csv_filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'frame',
+            'left_foot_x','left_foot_y','right_foot_x','right_foot_y',
+            'left_toe_x','left_toe_y','right_toe_x','right_toe_y',
+            'left_hip_x','left_hip_y','right_hip_x','right_hip_y',
+            'time_s'
+        ])
+
+    frame_num = 0
+    video_writer = None
+    pose_detector = mp_pose.Pose(model_complexity=1, enable_segmentation=False, smooth_landmarks=True)
+
+    import time
+    start_t = time.time()
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_num += 1
+        h, w, _ = frame.shape
+        if video_writer is None:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            video_writer = cv2.VideoWriter(video_filename, fourcc, fps, (w, h))
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose_detector.process(rgb)
+
+        if results.pose_landmarks:
+            lm = results.pose_landmarks.landmark
+            required = [
+                mp_pose.PoseLandmark.LEFT_ANKLE,
+                mp_pose.PoseLandmark.RIGHT_ANKLE,
+                mp_pose.PoseLandmark.LEFT_HIP,
+                mp_pose.PoseLandmark.RIGHT_HIP,
+            ]
+            ok = True
+            for r in required:
+                vis = getattr(lm[r], 'visibility', None)
+                if vis is None or vis < vis_thresh:
+                    ok = False
+                    break
+
+            if ok:
+                left_foot = lm[mp_pose.PoseLandmark.LEFT_ANKLE]
+                right_foot = lm[mp_pose.PoseLandmark.RIGHT_ANKLE]
+                left_toe = lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
+                right_toe = lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX]
+                left_hip = lm[mp_pose.PoseLandmark.LEFT_HIP]
+                right_hip = lm[mp_pose.PoseLandmark.RIGHT_HIP]
+
+                time_s = time.time() - start_t
+                with open(csv_filename, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        frame_num,
+                        left_foot.x, left_foot.y,
+                        right_foot.x, right_foot.y,
+                        left_toe.x, left_toe.y,
+                        right_toe.x, right_toe.y,
+                        left_hip.x, left_hip.y,
+                        right_hip.x, right_hip.y,
+                        time_s
+                    ])
+
+        # draw landmarks into frame for saved video
+        if results.pose_landmarks:
+            try:
+                mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            except Exception:
+                pass
+
+        if video_writer is not None:
+            video_writer.write(frame)
+
+        # allow user to interrupt if running interactively
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    if video_writer is not None:
+        video_writer.release()
+    pose_detector.close()
+    cv2.destroyAllWindows()
+
+    print(f"Data saved to {csv_filename}")
+    print(f"Video saved to {video_filename}")
+    return csv_filename, video_filename
+
+
 def main():
     ap = argparse.ArgumentParser(description='EVGS pipeline: extract contacts, classify, and plot')
     ap.add_argument('pose_csv', nargs='?', help='pose CSV file (defaults to latest non-empty)')
+    ap.add_argument('--capture', nargs='?', help='video file or camera index to capture and analyze')
     ap.add_argument('--out-prefix', default='front_contact', help='output file prefix')
     args = ap.parse_args()
-
     pose_path = args.pose_csv or find_latest_nonempty_pose()
+    # if capture requested, run capture first and use its CSV
+    if args.capture is not None:
+        csv_file, vid_file = capture_pose(args.capture)
+        if csv_file is None:
+            print('Capture failed or produced no CSV.')
+            return
+        pose_path = csv_file
+
     if not pose_path:
         print('No pose CSV provided and none found in workspace.')
         return
     print('Using pose CSV:', pose_path)
-    run_pipeline(pose_path, out_prefix=args.out_prefix)
+    # request saving a per-frame annotated video by default when capturing
+    save_vid = True if args.capture is not None else False
+    run_pipeline(pose_path, out_prefix=args.out_prefix, save_video=save_vid)
 
 
 if __name__ == '__main__':
