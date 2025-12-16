@@ -1,0 +1,23 @@
+======================================================================
+GAIT ANALYSIS - CONTACT TYPE REPORT
+======================================================================
+
+Analysis Date: 2025-12-16 15:48:46
+Video Source: Camera/Live Feed
+Frames before peak for classification: 3
+Contact Type Codes: 0=Heel, 1=Flat, 2=Toe
+
+Total contacts analyzed: 8
+Most common contact type: Code 2 (Toe)
+  Frequency: 6 of 8 contacts (75.0%)
+
+Contact Type Distribution:
+--------------------------------------------------
+Code   Type         Count    Percentage   Description         
+--------------------------------------------------
+1      Flat         2        25.0        % Flat foot landing   
+2      Toe          6        75.0        % Forefoot/toe landing
+
+======================================================================
+ANALYSIS COMPLETE
+======================================================================

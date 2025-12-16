@@ -6,6 +6,9 @@ import os
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+from collections import Counter
+import warnings
+warnings.filterwarnings('ignore')
 
 import matplotlib
 # force non-interactive backend for scripts
@@ -20,7 +23,6 @@ mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
 VIS_THRESH = 0.45
-
 TOL = 1e-3
 SMOOTH_WINDOW = 5
 # flat thresholds: absolute and fraction of foot length
@@ -29,6 +31,313 @@ FLAT_FRAC = 0.05
 
 # Number of frames to look before the peak for classification
 FRAMES_BEFORE_PEAK = 3
+
+# Contact type codes: 0=Heel, 1=Flat, 2=Toe
+CONTACT_CODES = {
+    'Heel': 0,
+    'Flat': 1, 
+    'Toe': 2,
+    'Unknown': -1
+}
+
+CONTACT_NAMES = {
+    0: 'Heel',
+    1: 'Flat',
+    2: 'Toe',
+    -1: 'Unknown'
+}
+
+
+def generate_contact_summary_report(df, out_prefix='gait_analysis'):
+    """
+    Generate a summary report of contact type frequencies and statistics.
+    Returns a dictionary with summary statistics.
+    """
+    if df.empty:
+        print("No contact data available for summary report.")
+        return None
+    
+    print("\n" + "="*70)
+    print("CONTACT TYPE SUMMARY REPORT")
+    print("="*70)
+    
+    # Convert contact types to codes
+    contact_codes = [CONTACT_CODES.get(ct, -1) for ct in df['contact_type']]
+    df['contact_code'] = contact_codes
+    
+    # Count frequencies
+    contact_counter = Counter(contact_codes)
+    total_contacts = len(contact_codes)
+    
+    # Calculate percentages
+    percentages = {}
+    for code, count in contact_counter.items():
+        percentages[code] = (count / total_contacts * 100) if total_contacts > 0 else 0
+    
+    # Find most common contact type
+    if contact_counter:
+        most_common_code = contact_counter.most_common(1)[0][0]
+        most_common_name = CONTACT_NAMES.get(most_common_code, 'Unknown')
+        most_common_percentage = percentages.get(most_common_code, 0)
+    else:
+        most_common_code = -1
+        most_common_name = 'No contacts'
+        most_common_percentage = 0
+    
+    # Print detailed report to console
+    print(f"Total contacts analyzed: {total_contacts}")
+    print("-"*70)
+    print(f"{'Code':<6} {'Contact Type':<12} {'Count':<8} {'Percentage':<12} {'Description':<20}")
+    print("-"*70)
+    
+    for code in sorted(contact_counter.keys()):
+        name = CONTACT_NAMES.get(code, 'Unknown')
+        count = contact_counter[code]
+        perc = percentages[code]
+        desc = ""
+        if code == 0:
+            desc = "Heel-first landing"
+        elif code == 1:
+            desc = "Flat foot landing"
+        elif code == 2:
+            desc = "Forefoot/toe landing"
+        else:
+            desc = "Unknown/undefined"
+        
+        print(f"{code:<6} {name:<12} {count:<8} {perc:<12.1f}% {desc:<20}")
+    
+    print("-"*70)
+    print(f"\nMOST COMMON CONTACT TYPE: Code {most_common_code} ({most_common_name})")
+    print(f"Frequency: {contact_counter.get(most_common_code, 0)} of {total_contacts} contacts ({most_common_percentage:.1f}%)")
+    
+    # Analyze by front foot
+    print("\n" + "-"*70)
+    print("CONTACT TYPE BY FRONT FOOT")
+    print("-"*70)
+    
+    left_foot_contacts = df[df['front'] == 'left']
+    right_foot_contacts = df[df['front'] == 'right']
+    
+    print(f"Left foot as front: {len(left_foot_contacts)} contacts")
+    print(f"Right foot as front: {len(right_foot_contacts)} contacts")
+    
+    if len(left_foot_contacts) > 0:
+        left_counter = Counter(left_foot_contacts['contact_code'])
+        print("\nLeft foot contact distribution:")
+        for code in sorted(left_counter.keys()):
+            name = CONTACT_NAMES.get(code, 'Unknown')
+            count = left_counter[code]
+            perc = (count / len(left_foot_contacts) * 100) if len(left_foot_contacts) > 0 else 0
+            print(f"  {name}: {count} ({perc:.1f}%)")
+    
+    if len(right_foot_contacts) > 0:
+        right_counter = Counter(right_foot_contacts['contact_code'])
+        print("\nRight foot contact distribution:")
+        for code in sorted(right_counter.keys()):
+            name = CONTACT_NAMES.get(code, 'Unknown')
+            count = right_counter[code]
+            perc = (count / len(right_foot_contacts) * 100) if len(right_foot_contacts) > 0 else 0
+            print(f"  {name}: {count} ({perc:.1f}%)")
+    
+    # Additional statistics
+    print("\n" + "-"*70)
+    print("ADDITIONAL STATISTICS")
+    print("-"*70)
+    
+    # Average separation
+    if 'separation' in df.columns:
+        avg_sep = df['separation'].mean()
+        std_sep = df['separation'].std()
+        print(f"Average foot separation: {avg_sep:.4f} (std: {std_sep:.4f})")
+    
+    # Average foot length
+    if 'foot_length' in df.columns:
+        avg_len = df['foot_length'].mean()
+        std_len = df['foot_length'].std()
+        print(f"Average foot length: {avg_len:.4f} (std: {std_len:.4f})")
+    
+    # Time between contacts
+    if 'time_s' in df.columns and len(df) > 1:
+        time_diffs = df['time_s'].diff().dropna()
+        if len(time_diffs) > 0:
+            avg_time_diff = time_diffs.mean()
+            cadence = 60.0 / avg_time_diff if avg_time_diff > 0 else 0  # steps per minute
+            print(f"Average time between contacts: {avg_time_diff:.3f}s")
+            print(f"Estimated cadence: {cadence:.1f} steps per minute")
+    
+    # Create visualization
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Pie chart of contact types
+    ax1 = axes[0]
+    if contact_counter:
+        labels = []
+        sizes = []
+        colors = ['#2ecc71', '#f39c12', '#e74c3c']  # Green, Orange, Red for Heel, Flat, Toe
+        
+        for code in [0, 1, 2]:  # Heel, Flat, Toe in order
+            if code in contact_counter:
+                labels.append(CONTACT_NAMES.get(code, f'Code {code}'))
+                sizes.append(contact_counter[code])
+        
+        if sizes:
+            ax1.pie(sizes, labels=labels, colors=colors[:len(sizes)], autopct='%1.1f%%',
+                   startangle=90, wedgeprops={'edgecolor': 'white', 'linewidth': 2})
+            ax1.set_title('Contact Type Distribution', fontsize=14, fontweight='bold')
+        else:
+            ax1.text(0.5, 0.5, 'No contact data', ha='center', va='center', fontsize=12)
+            ax1.set_title('Contact Type Distribution', fontsize=14, fontweight='bold')
+    else:
+        ax1.text(0.5, 0.5, 'No contact data', ha='center', va='center', fontsize=12)
+        ax1.set_title('Contact Type Distribution', fontsize=14, fontweight='bold')
+    
+    # Bar chart of contact frequencies
+    ax2 = axes[1]
+    if contact_counter:
+        codes = []
+        names = []
+        counts = []
+        bar_colors = []
+        
+        for code in [0, 1, 2]:  # Heel, Flat, Toe in order
+            if code in contact_counter:
+                codes.append(code)
+                names.append(CONTACT_NAMES.get(code, f'Code {code}'))
+                counts.append(contact_counter[code])
+                # Color coding
+                if code == 0:
+                    bar_colors.append('#2ecc71')  # Green for Heel
+                elif code == 1:
+                    bar_colors.append('#f39c12')  # Orange for Flat
+                elif code == 2:
+                    bar_colors.append('#e74c3c')  # Red for Toe
+                else:
+                    bar_colors.append('#95a5a6')  # Gray for others
+        
+        bars = ax2.bar(names, counts, color=bar_colors, edgecolor='black', linewidth=1.5)
+        ax2.set_ylabel('Number of Contacts', fontsize=12)
+        ax2.set_title('Contact Type Frequency', fontsize=14, fontweight='bold')
+        
+        # Add count labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                    f'{int(height)}', ha='center', va='bottom', fontsize=11)
+        
+        # Add percentage labels inside bars
+        for i, bar in enumerate(bars):
+            height = bar.get_height()
+            perc = (height / total_contacts * 100) if total_contacts > 0 else 0
+            ax2.text(bar.get_x() + bar.get_width()/2., height/2,
+                    f'{perc:.1f}%', ha='center', va='center', color='white',
+                    fontweight='bold', fontsize=11)
+        
+        ax2.grid(axis='y', alpha=0.3, linestyle='--')
+    else:
+        ax2.text(0.5, 0.5, 'No contact data', ha='center', va='center', fontsize=12)
+        ax2.set_title('Contact Type Frequency', fontsize=14, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    # Save the summary visualization
+    summary_plot_path = f"{out_prefix}_summary_plot.png"
+    plt.savefig(summary_plot_path, dpi=150, bbox_inches='tight')
+    print(f"\nSaved summary plot to: {summary_plot_path}")
+    
+    # Save summary statistics to CSV
+    summary_csv_path = f"{out_prefix}_summary_stats.csv"
+    summary_data = {
+        'total_contacts': [total_contacts],
+        'most_common_code': [most_common_code],
+        'most_common_name': [most_common_name],
+        'most_common_count': [contact_counter.get(most_common_code, 0)],
+        'most_common_percentage': [most_common_percentage],
+        'heel_count': [contact_counter.get(0, 0)],
+        'flat_count': [contact_counter.get(1, 0)],
+        'toe_count': [contact_counter.get(2, 0)],
+        'unknown_count': [contact_counter.get(-1, 0)],
+        'heel_percentage': [percentages.get(0, 0)],
+        'flat_percentage': [percentages.get(1, 0)],
+        'toe_percentage': [percentages.get(2, 0)],
+        'left_foot_contacts': [len(left_foot_contacts)],
+        'right_foot_contacts': [len(right_foot_contacts)]
+    }
+    
+    # Add additional stats if available
+    if 'separation' in df.columns:
+        summary_data['avg_separation'] = [df['separation'].mean()]
+        summary_data['std_separation'] = [df['separation'].std()]
+    
+    if 'foot_length' in df.columns:
+        summary_data['avg_foot_length'] = [df['foot_length'].mean()]
+        summary_data['std_foot_length'] = [df['foot_length'].std()]
+    
+    if 'time_s' in df.columns and len(df) > 1:
+        time_diffs = df['time_s'].diff().dropna()
+        if len(time_diffs) > 0:
+            summary_data['avg_time_between_contacts'] = [time_diffs.mean()]
+            summary_data['estimated_cadence'] = [60.0 / time_diffs.mean() if time_diffs.mean() > 0 else 0]
+    
+    summary_df = pd.DataFrame(summary_data)
+    summary_df.to_csv(summary_csv_path, index=False)
+    print(f"Saved summary statistics to: {summary_csv_path}")
+    
+    # Create a detailed report text file
+    report_txt_path = f"{out_prefix}_detailed_report.txt"
+    with open(report_txt_path, 'w') as f:
+        f.write("="*70 + "\n")
+        f.write("GAIT ANALYSIS - CONTACT TYPE REPORT\n")
+        f.write("="*70 + "\n\n")
+        f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Video Source: Camera/Live Feed\n")
+        f.write(f"Frames before peak for classification: {FRAMES_BEFORE_PEAK}\n")
+        f.write(f"Contact Type Codes: 0=Heel, 1=Flat, 2=Toe\n\n")
+        
+        f.write(f"Total contacts analyzed: {total_contacts}\n")
+        f.write(f"Most common contact type: Code {most_common_code} ({most_common_name})\n")
+        f.write(f"  Frequency: {contact_counter.get(most_common_code, 0)} of {total_contacts} contacts ({most_common_percentage:.1f}%)\n\n")
+        
+        f.write("Contact Type Distribution:\n")
+        f.write("-"*50 + "\n")
+        f.write(f"{'Code':<6} {'Type':<12} {'Count':<8} {'Percentage':<12} {'Description':<20}\n")
+        f.write("-"*50 + "\n")
+        for code in sorted(contact_counter.keys()):
+            name = CONTACT_NAMES.get(code, 'Unknown')
+            count = contact_counter[code]
+            perc = percentages[code]
+            desc = ""
+            if code == 0:
+                desc = "Heel-first landing"
+            elif code == 1:
+                desc = "Flat foot landing"
+            elif code == 2:
+                desc = "Forefoot/toe landing"
+            else:
+                desc = "Unknown/undefined"
+            f.write(f"{code:<6} {name:<12} {count:<8} {perc:<12.1f}% {desc:<20}\n")
+        
+        f.write("\n" + "="*70 + "\n")
+        f.write("ANALYSIS COMPLETE\n")
+        f.write("="*70 + "\n")
+    
+    print(f"Saved detailed report to: {report_txt_path}")
+    print("\n" + "="*70)
+    print("REPORT GENERATION COMPLETE")
+    print("="*70)
+    
+    # Return summary statistics
+    summary_stats = {
+        'total_contacts': total_contacts,
+        'most_common_code': most_common_code,
+        'most_common_name': most_common_name,
+        'most_common_percentage': most_common_percentage,
+        'contact_distribution': dict(contact_counter),
+        'percentages': percentages,
+        'left_foot_count': len(left_foot_contacts),
+        'right_foot_count': len(right_foot_contacts)
+    }
+    
+    return summary_stats
 
 
 def find_latest_nonempty_pose():
@@ -47,137 +356,227 @@ def find_latest_nonempty_pose():
     return None
 
 
-def process_video_for_pose(video_path):
+def capture_live_pose(camera_id=0, duration_seconds=30, vis_thresh=VIS_THRESH):
     """
-    Process a video file to extract pose landmarks and save to a CSV.
-    This function now captures ALL foot landmarks including HEEL.
+    Capture live video from camera and extract pose landmarks.
+    Returns CSV filename with pose data.
     """
-    if not os.path.exists(video_path):
-        print(f"Error: Video file not found: {video_path}")
-        return None
-
-    base_name = os.path.splitext(os.path.basename(video_path))[0]
-    csv_filename = f"pose_{base_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-
-    cap = cv2.VideoCapture(video_path)
+    # Declare FRAMES_BEFORE_PEAK as global if we need to modify it
+    global FRAMES_BEFORE_PEAK
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    csv_filename = f"pose_live_camera_{timestamp}.csv"
+    video_filename = f"video_live_camera_{timestamp}.mp4"
+    
+    print(f"Starting live camera capture (Camera ID: {camera_id})")
+    print(f"Duration: {duration_seconds} seconds")
+    print(f"Frames before peak for classification: {FRAMES_BEFORE_PEAK}")
+    print("Press 'q' to stop early, or wait for automatic completion")
+    print("Walking left-to-right is recommended for best results")
+    
+    cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
-        print(f"Error: Could not open video: {video_path}")
+        print(f"Error: Could not open camera {camera_id}")
         return None
-
-    # UPDATED CSV header to include HEEL landmarks
+    
+    # Get camera properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30.0  # Default assumption
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    print(f"Camera resolution: {width}x{height}, FPS: {fps:.1f}")
+    
+    # Setup video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(video_filename, fourcc, fps, (width, height))
+    
+    # Setup CSV file
     with open(csv_filename, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow([
             'frame',
-            # Ankle landmarks
             'left_ankle_x', 'left_ankle_y',
             'right_ankle_x', 'right_ankle_y',
-            # Heel landmarks (NEW - for contact detection)
             'left_heel_x', 'left_heel_y',
             'right_heel_x', 'right_heel_y',
-            # Toe landmarks
             'left_toe_x', 'left_toe_y',
             'right_toe_x', 'right_toe_y',
-            # Hip landmarks
             'left_hip_x', 'left_hip_y',
             'right_hip_x', 'right_hip_y',
             'time_s'
         ])
-
+    
     frame_num = 0
     pose_detector = mp_pose.Pose(model_complexity=1,
                                  enable_segmentation=False,
                                  smooth_landmarks=True)
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30.0
-
-    print(f"Processing video: {video_path} ({fps:.1f} fps)")
-
-    while cap.isOpened():
+    
+    start_time = datetime.now()
+    last_status_time = start_time
+    
+    while True:
         ret, frame = cap.read()
         if not ret:
+            print("Error: Failed to capture frame")
             break
-
+        
         frame_num += 1
-        time_s = frame_num / fps
-
+        current_time = datetime.now()
+        elapsed_time = (current_time - start_time).total_seconds()
+        
+        # Check if duration limit reached
+        if elapsed_time >= duration_seconds:
+            print(f"\nDuration limit reached ({duration_seconds} seconds)")
+            break
+        
+        # Save frame to video
+        video_writer.write(frame)
+        
+        # Process for pose estimation
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose_detector.process(rgb)
-
+        
+        # Calculate current time in seconds
+        time_s = elapsed_time
+        
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             # Check visibility for required landmarks including HEEL
             required = [
                 mp_pose.PoseLandmark.LEFT_ANKLE,
                 mp_pose.PoseLandmark.RIGHT_ANKLE,
-                mp_pose.PoseLandmark.LEFT_HEEL,      # NEW
-                mp_pose.PoseLandmark.RIGHT_HEEL,     # NEW
+                mp_pose.PoseLandmark.LEFT_HEEL,
+                mp_pose.PoseLandmark.RIGHT_HEEL,
                 mp_pose.PoseLandmark.LEFT_FOOT_INDEX,
                 mp_pose.PoseLandmark.RIGHT_FOOT_INDEX,
             ]
             ok = True
             for r in required:
                 vis = getattr(lm[r], 'visibility', None)
-                if vis is None or vis < VIS_THRESH:
+                if vis is None or vis < vis_thresh:
                     ok = False
                     break
-
+            
             if ok:
                 # Get ALL foot landmarks including HEEL
                 left_ankle = lm[mp_pose.PoseLandmark.LEFT_ANKLE]
                 right_ankle = lm[mp_pose.PoseLandmark.RIGHT_ANKLE]
-                left_heel = lm[mp_pose.PoseLandmark.LEFT_HEEL]      # NEW
-                right_heel = lm[mp_pose.PoseLandmark.RIGHT_HEEL]    # NEW
+                left_heel = lm[mp_pose.PoseLandmark.LEFT_HEEL]
+                right_heel = lm[mp_pose.PoseLandmark.RIGHT_HEEL]
                 left_toe = lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
                 right_toe = lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX]
                 left_hip = lm[mp_pose.PoseLandmark.LEFT_HIP]
                 right_hip = lm[mp_pose.PoseLandmark.RIGHT_HIP]
-
+                
                 with open(csv_filename, 'a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([
                         frame_num,
-                        # Ankle
                         left_ankle.x, left_ankle.y,
                         right_ankle.x, right_ankle.y,
-                        # Heel
                         left_heel.x, left_heel.y,
                         right_heel.x, right_heel.y,
-                        # Toe
                         left_toe.x, left_toe.y,
                         right_toe.x, right_toe.y,
-                        # Hip
                         left_hip.x, left_hip.y,
                         right_hip.x, right_hip.y,
                         time_s
                     ])
+                
+                # Draw landmarks on display frame
+                mp_drawing.draw_landmarks(
+                    frame, 
+                    results.pose_landmarks, 
+                    mp_pose.POSE_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+                    mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2)
+                )
+                
+                # Add real-time feedback text
+                feedback_text = f"Pose detected: Frame {frame_num}, Time: {time_s:.1f}s"
+                cv2.putText(frame, feedback_text, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # Draw foot contact visualization
+                try:
+                    # Calculate which foot is front (for display only)
+                    if left_ankle.x > right_ankle.x:
+                        front_foot = "LEFT"
+                        front_color = (255, 0, 0)  # Red
+                    else:
+                        front_foot = "RIGHT"
+                        front_color = (0, 0, 255)  # Blue
+                    
+                    contact_text = f"Front foot: {front_foot}"
+                    cv2.putText(frame, contact_text, (10, 60),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, front_color, 2)
+                except:
+                    pass
             else:
                 # Write row with NaN for missing landmarks
                 with open(csv_filename, 'a', newline='') as f:
                     writer = csv.writer(f)
                     writer.writerow([frame_num] + [np.nan] * 16 + [time_s])
+                
+                feedback_text = f"Low visibility: Frame {frame_num}, Time: {time_s:.1f}s"
+                cv2.putText(frame, feedback_text, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
             # Write row with NaN if no landmarks detected
             with open(csv_filename, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([frame_num] + [np.nan] * 16 + [time_s])
-
-        # Show progress
-        if frame_num % 30 == 0:
-            print(f"  Processed frame {frame_num}")
-
+            
+            feedback_text = f"No pose: Frame {frame_num}, Time: {time_s:.1f}s"
+            cv2.putText(frame, feedback_text, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        # Add instructions and timer
+        timer_text = f"Time: {elapsed_time:.1f}s / {duration_seconds}s"
+        cv2.putText(frame, timer_text, (width - 200, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        instruction_text = "Walk left-to-right, press 'q' to stop"
+        cv2.putText(frame, instruction_text, (width // 2 - 150, height - 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Show progress every 5 seconds
+        if (current_time - last_status_time).total_seconds() >= 5:
+            print(f"  Captured {frame_num} frames, {elapsed_time:.1f}s elapsed")
+            last_status_time = current_time
+        
+        # Display the frame
+        cv2.imshow('Gait Analysis - Camera Feed', frame)
+        
+        # Check for 'q' key press to quit early
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("\nManual stop requested by user")
+            break
+    
+    # Cleanup
     cap.release()
+    video_writer.release()
     pose_detector.close()
-    print(f"Pose data with HEEL landmarks saved to {csv_filename}")
+    cv2.destroyAllWindows()
+    
+    print(f"\nCapture completed:")
+    print(f"  - Frames captured: {frame_num}")
+    print(f"  - Pose data saved to: {csv_filename}")
+    print(f"  - Video saved to: {video_filename}")
+    
     return csv_filename
 
 
-def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_out=None, screenshot=True):
+def run_pipeline(pose_path, out_prefix='camera_analysis', screenshot=False):
     """
-    Main pipeline that now uses HEEL landmarks for contact type determination.
+    Main pipeline that uses HEEL landmarks for contact type determination.
+    Modified to work with camera data.
     """
+    # Declare FRAMES_BEFORE_PEAK as global since we're reading it
+    global FRAMES_BEFORE_PEAK
+    
     pose = pd.read_csv(pose_path)
     
     # Drop rows where critical HEEL and TOE data is missing
@@ -186,17 +585,13 @@ def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_
     
     if pose.empty:
         print('Pose CSV empty or missing HEEL/TOE data:', pose_path)
-        return
+        return None
 
     frames = pose['frame'].astype(int).to_numpy()
     
     # Use ANKLE positions for foot separation calculation (more stable)
     left_ankle_x = pose['left_ankle_x'].astype(float).to_numpy()
     right_ankle_x = pose['right_ankle_x'].astype(float).to_numpy()
-    
-    # Also get HEEL positions for visualization
-    left_heel_x = pose['left_heel_x'].astype(float).to_numpy()
-    right_heel_x = pose['right_heel_x'].astype(float).to_numpy()
     
     # Foot separation based on ANKLE positions (more stable for this)
     dist = np.abs(right_ankle_x - left_ankle_x)
@@ -284,12 +679,6 @@ def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_
         else:
             peak_time = np.nan
 
-        # Calculate ankle-to-heel offset for reference
-        try:
-            ankle_heel_offset_y = float(ankle_y) - float(heel_y)  # Positive = ankle above heel
-        except:
-            ankle_heel_offset_y = np.nan
-
         contacts.append({
             'peak_frame': peak_frame,           # Frame of max separation
             'class_frame': classification_frame, # Frame used for contact determination
@@ -307,12 +696,11 @@ def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_
             'foot_length': foot_len,
             'threshold': thresh,
             'vertical_diff': dy if dy is not None else np.nan,
-            'ankle_heel_offset': ankle_heel_offset_y
         })
 
     if not contacts:
         print('No contacts found in', pose_path)
-        return
+        return None
 
     df = pd.DataFrame(contacts)
     
@@ -320,124 +708,18 @@ def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_
     report_csv = out_prefix + '_report.csv'
     summary_csv = out_prefix + '_summary.csv'
     coords_csv = out_prefix + '_coords.csv'
-    landmark_info_csv = out_prefix + '_landmark_info.csv'
 
     df.to_csv(report_csv, index=False)
     df[['peak_frame', 'class_frame', 'time_s', 'front', 'contact_type', 'vertical_diff']].to_csv(summary_csv, index=False)
     df[['peak_frame', 'class_frame', 'time_s', 'front', 'toe_x', 'toe_y', 'heel_x', 'heel_y']].to_csv(coords_csv, index=False)
-    df[['peak_frame', 'class_frame', 'front', 'contact_type', 'foot_length', 'threshold', 'vertical_diff', 'ankle_heel_offset']].to_csv(landmark_info_csv, index=False)
 
     print(f'Wrote {report_csv}')
     print(f'Wrote {summary_csv}')
     print(f'Wrote {coords_csv}')
-    print(f'Wrote {landmark_info_csv}')
-
-    # --- Save Screenshots of Contact Frames ---
-    if screenshot:
-        print("\nSaving contact frame screenshots with HEEL landmarks...")
-        original_video_path = '1058599021-preview.mp4'
-        
-        if not os.path.exists(original_video_path):
-            print(f"Warning: Original video {original_video_path} not found for screenshots.")
-        else:
-            cap = cv2.VideoCapture(original_video_path)
-            if not cap.isOpened():
-                print("Warning: Could not open video for screenshots.")
-            else:
-                screenshot_dir = out_prefix + '_screenshots'
-                os.makedirs(screenshot_dir, exist_ok=True)
-
-                for idx, contact in df.iterrows():
-                    frame_to_capture = int(contact['class_frame'])
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_to_capture - 1)
-                    ret, frame = cap.read()
-                    
-                    if ret:
-                        h, w = frame.shape[:2]
-                        
-                        # Get pose data for this frame
-                        frame_data = pose[pose['frame'] == frame_to_capture]
-                        if not frame_data.empty:
-                            frame_data = frame_data.iloc[0]
-                            
-                            # Helper to draw circles from normalized coordinates
-                            def draw_circle_from_data(x_col, y_col, color, radius, thickness=-1):
-                                try:
-                                    x_norm = float(frame_data[x_col])
-                                    y_norm = float(frame_data[y_col])
-                                    if not (np.isnan(x_norm) or np.isnan(y_norm)):
-                                        x_pix = int(x_norm * w)
-                                        y_pix = int(y_norm * h)
-                                        cv2.circle(frame, (x_pix, y_pix), radius, color, thickness)
-                                        return (x_pix, y_pix)
-                                except:
-                                    pass
-                                return None
-                            
-                            # Draw landmarks with different colors
-                            # Ankle: Yellow
-                            draw_circle_from_data('left_ankle_x', 'left_ankle_y', (0, 255, 255), 6, 2)
-                            draw_circle_from_data('right_ankle_x', 'right_ankle_y', (0, 255, 255), 6, 2)
-                            
-                            # Heel: Blue (for contact detection)
-                            left_heel_pos = draw_circle_from_data('left_heel_x', 'left_heel_y', (255, 0, 0), 8)
-                            right_heel_pos = draw_circle_from_data('right_heel_x', 'right_heel_y', (255, 0, 0), 8)
-                            
-                            # Toe: Green (for contact detection)
-                            left_toe_pos = draw_circle_from_data('left_toe_x', 'left_toe_y', (0, 255, 0), 8)
-                            right_toe_pos = draw_circle_from_data('right_toe_x', 'right_toe_y', (0, 255, 0), 8)
-                            
-                            # Highlight the FRONT foot based on classification
-                            front_foot = contact['front']
-                            contact_type = contact['contact_type']
-                            
-                            if front_foot == 'left':
-                                # Highlight left foot landmarks
-                                draw_circle_from_data('left_heel_x', 'left_heel_y', (255, 100, 100), 12, 3)
-                                draw_circle_from_data('left_toe_x', 'left_toe_y', (100, 255, 100), 12, 3)
-                                # Draw line connecting heel and toe
-                                if left_heel_pos and left_toe_pos:
-                                    cv2.line(frame, left_heel_pos, left_toe_pos, (0, 0, 255), 2)
-                            else:
-                                # Highlight right foot landmarks
-                                draw_circle_from_data('right_heel_x', 'right_heel_y', (255, 100, 100), 12, 3)
-                                draw_circle_from_data('right_toe_x', 'right_toe_y', (100, 255, 100), 12, 3)
-                                # Draw line connecting heel and toe
-                                if right_heel_pos and right_toe_pos:
-                                    cv2.line(frame, right_heel_pos, right_toe_pos, (0, 0, 255), 2)
-                            
-                            # Add text annotations
-                            text_line1 = f"Frame {frame_to_capture}: {contact_type} contact"
-                            text_line2 = f"Front: {front_foot} foot | dy={contact['vertical_diff']:.3f}"
-                            text_line3 = f"Using HEEL landmark (Frame {FRAMES_BEFORE_PEAK} before peak)"
-                            
-                            cv2.putText(frame, text_line1, (30, 40),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
-                            cv2.putText(frame, text_line2, (30, 80),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-                            cv2.putText(frame, text_line3, (30, 110),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 100), 1)
-                            
-                            # Add legend
-                            cv2.putText(frame, "Heel: BLUE | Toe: GREEN | Ankle: YELLOW", 
-                                       (w-400, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-
-                        # Save the screenshot
-                        screenshot_path = os.path.join(
-                            screenshot_dir, 
-                            f"contact_{frame_to_capture:05d}_{contact_type}_{front_foot}.jpg"
-                        )
-                        cv2.imwrite(screenshot_path, frame)
-                        print(f"  Saved: {screenshot_path}")
-                
-                cap.release()
-                print(f"Screenshots saved to: {screenshot_dir}/")
 
     # Create annotated distance plot
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(12, 6))
     
-    # Plot 1: Foot separation
-    plt.subplot(2, 1, 1)
     plt.plot(frames, dist, label='raw distance', alpha=0.4)
     plt.plot(frames, dist_smooth, label='smoothed', linewidth=2)
     
@@ -472,41 +754,6 @@ def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_
     plt.grid(True, alpha=0.3)
     plt.legend()
     
-    # Plot 2: Heel vertical positions
-    plt.subplot(2, 1, 2)
-    left_heel_y = pose['left_heel_y'].astype(float).to_numpy()
-    right_heel_y = pose['right_heel_y'].astype(float).to_numpy()
-    
-    plt.plot(frames, left_heel_y, label='Left HEEL y', alpha=0.7)
-    plt.plot(frames, right_heel_y, label='Right HEEL y', alpha=0.7)
-    
-    # Mark contact frames
-    for _, contact in df.iterrows():
-        class_frame = int(contact['class_frame'])
-        contact_type = contact['contact_type']
-        front_foot = contact['front']
-        c = color_map.get(contact_type, 'black')
-        
-        # Get heel y-position at classification frame
-        frame_data = pose[pose['frame'] == class_frame]
-        if not frame_data.empty:
-            frame_data = frame_data.iloc[0]
-            if front_foot == 'left':
-                heel_y = float(frame_data['left_heel_y'])
-            else:
-                heel_y = float(frame_data['right_heel_y'])
-            
-            plt.scatter(class_frame, heel_y, color=c, s=80, zorder=5)
-            plt.text(class_frame, heel_y + 0.01, contact_type, 
-                    ha='center', va='bottom', fontsize=8, color=c)
-    
-    plt.xlabel('Frame')
-    plt.ylabel('Vertical Position (HEEL y)')
-    plt.title('HEEL Vertical Positions with Contact Types')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.gca().invert_yaxis()  # Invert so lower on screen = higher y value
-    
     plt.tight_layout()
     out_png = out_prefix + '_analysis.png'
     plt.savefig(out_png, dpi=150)
@@ -529,33 +776,94 @@ def run_pipeline(pose_path, out_prefix='front_contact', save_video=False, video_
     print(f"Total contacts detected: {len(contacts)}")
     print(f"Using HEEL landmark for contact type determination")
     print(f"Classification performed {FRAMES_BEFORE_PEAK} frames before peak separation")
+    
+    # Return the contacts DataFrame for further use
+    return df
 
 
 def main():
-    # Process the specific video
-    video_file = '1058599021-preview.mp4'
-
-    if not os.path.exists(video_file):
-        print(f"Error: Video file '{video_file}' not found.")
-        print("Please ensure it's in the same directory as this script.")
-        return
-
-    print(f"Starting gait analysis for: {video_file}")
-    print("Extracting pose landmarks including HEEL...")
+    # Declare FRAMES_BEFORE_PEAK as global since we'll modify it
+    global FRAMES_BEFORE_PEAK
     
-    # First extract pose data with HEEL landmarks
-    pose_csv = process_video_for_pose(video_file)
-
+    parser = argparse.ArgumentParser(description='Live camera gait analysis')
+    parser.add_argument('--camera', type=int, default=0, help='Camera ID (default: 0)')
+    parser.add_argument('--duration', type=int, default=30, help='Recording duration in seconds (default: 30)')
+    parser.add_argument('--frames-before', type=int, default=FRAMES_BEFORE_PEAK, 
+                       help=f'Frames before peak for classification (default: {FRAMES_BEFORE_PEAK})')
+    parser.add_argument('--out-prefix', default='camera_gait_analysis', help='Output file prefix')
+    
+    args = parser.parse_args()
+    
+    # Update global variable
+    FRAMES_BEFORE_PEAK = args.frames_before
+    
+    print("="*70)
+    print("LIVE CAMERA GAIT ANALYSIS SYSTEM")
+    print("="*70)
+    print(f"Camera ID: {args.camera}")
+    print(f"Duration: {args.duration} seconds")
+    print(f"Frames before peak: {FRAMES_BEFORE_PEAK}")
+    print("Instructions:")
+    print("1. Position yourself to walk from LEFT to RIGHT across the frame")
+    print("2. Walk naturally at your normal pace")
+    print("3. Make sure your feet are visible in the frame")
+    print("4. Press 'q' to stop early if needed")
+    print("="*70)
+    
+    # Step 1: Capture live video from camera
+    print("\nStep 1: Capturing live video from camera...")
+    pose_csv = capture_live_pose(
+        camera_id=args.camera,
+        duration_seconds=args.duration,
+        vis_thresh=VIS_THRESH
+    )
+    
     if pose_csv is None:
-        print("Failed to extract pose data. Exiting.")
+        print("Failed to capture pose data. Exiting.")
         return
-
-    # Run the analysis pipeline
-    base_name = os.path.splitext(os.path.basename(video_file))[0]
-    run_pipeline(pose_csv,
-                 out_prefix=f'gait_analysis_{base_name}',
-                 save_video=False,
-                 screenshot=True)
+    
+    # Step 2: Analyze the captured data
+    print("\nStep 2: Analyzing gait data...")
+    df_contacts = run_pipeline(
+        pose_csv,
+        out_prefix=args.out_prefix,
+        screenshot=False  # Screenshots not available for live camera without saved video
+    )
+    
+    # Step 3: Generate summary report
+    if df_contacts is not None and not df_contacts.empty:
+        print("\nStep 3: Generating contact type summary report...")
+        summary_stats = generate_contact_summary_report(df_contacts, args.out_prefix)
+        
+        print("\n" + "="*70)
+        print("ANALYSIS COMPLETE")
+        print("="*70)
+        print(f"Most common contact type: Code {summary_stats['most_common_code']} "
+              f"({summary_stats['most_common_name']})")
+        print(f"This occurred in {summary_stats['most_common_percentage']:.1f}% of contacts")
+        
+        # Print simple interpretation
+        print("\nInterpretation:")
+        if summary_stats['most_common_code'] == 0:
+            print("Dominant HEEL-STRIKE pattern detected")
+            print("This suggests a rearfoot strike gait pattern")
+        elif summary_stats['most_common_code'] == 1:
+            print("Dominant FLAT-FOOT pattern detected")
+            print("This suggests a midfoot strike gait pattern")
+        elif summary_stats['most_common_code'] == 2:
+            print("Dominant TOE-STRIKE pattern detected")
+            print("This suggests a forefoot strike gait pattern")
+        
+        print("\nFiles generated:")
+        print(f"  - {args.out_prefix}_report.csv")
+        print(f"  - {args.out_prefix}_summary.csv")
+        print(f"  - {args.out_prefix}_summary_stats.csv")
+        print(f"  - {args.out_prefix}_summary_plot.png")
+        print(f"  - {args.out_prefix}_detailed_report.txt")
+        print(f"  - {args.out_prefix}_analysis.png")
+        print("="*70)
+    else:
+        print("\nNo contacts detected. Please try again with clearer walking footage.")
 
 
 if __name__ == '__main__':

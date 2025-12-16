@@ -1,0 +1,23 @@
+======================================================================
+GAIT ANALYSIS - CONTACT TYPE REPORT
+======================================================================
+
+Analysis Date: 2025-12-16 15:31:04
+Video File: 1058599021-preview.mp4
+Frames before peak for classification: 3
+Contact Type Codes: 0=Heel, 1=Flat, 2=Toe
+
+Total contacts analyzed: 11
+Most common contact type: Code 0 (Heel)
+  Frequency: 10 of 11 contacts (90.9%)
+
+Contact Type Distribution:
+--------------------------------------------------
+Code   Type         Count    Percentage   Description         
+--------------------------------------------------
+0      Heel         10       90.9        % Heel-first landing  
+1      Flat         1        9.1         % Flat foot landing   
+
+======================================================================
+ANALYSIS COMPLETE
+======================================================================

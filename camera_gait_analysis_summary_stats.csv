@@ -1,0 +1,2 @@
+total_contacts,most_common_code,most_common_name,most_common_count,most_common_percentage,heel_count,flat_count,toe_count,unknown_count,heel_percentage,flat_percentage,toe_percentage,left_foot_contacts,right_foot_contacts,avg_separation,std_separation,avg_foot_length,std_foot_length,avg_time_between_contacts,estimated_cadence
+8,2,Toe,6,75.0,0,2,6,0,0,25.0,75.0,4,4,0.10449882829561832,0.04366637715886739,0.04857131302249593,0.008444217384889366,0.6867481428571427,87.36827412503276
